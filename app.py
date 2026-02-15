@@ -38,21 +38,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
-    value = os.getenv(key)
-    if value:
-        return value
-    try:
-        return st.secrets.get(key, default)
-    except Exception:
-        return default
-
-
-MODEL_NAME = get_config_value("GEMINI_MODEL", "gemini-1.5-flash")
-GEMINI_API_KEY = get_config_value("GEMINI_API_KEY")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-pro")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    st.error("GEMINI_API_KEY is missing. Set it in Streamlit secrets or .env.")
+    st.error("GEMINI_API_KEY is missing. Set it in your .env file.")
     st.stop()
 
 genai.configure(api_key=GEMINI_API_KEY)
@@ -64,7 +54,7 @@ def get_gemini_model():
         return genai.GenerativeModel(MODEL_NAME)
     except Exception as e:
         st.error(f"Failed to initialize Gemini model '{MODEL_NAME}': {e}")
-        st.info("Try setting GEMINI_MODEL in secrets to 'gemini-1.5-flash' or 'gemini-1.5-pro'")
+        st.info("Try setting GEMINI_MODEL in .env to 'gemini-pro' or 'gemini-1.5-pro'")
         st.stop()
         return None
 
