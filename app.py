@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -38,25 +40,61 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-pro")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
+    value = os.getenv(key)
+    if value:
+        return value
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
 
-if not GEMINI_API_KEY:
-    st.error("GEMINI_API_KEY is missing. Set it in your .env file.")
+
+GROK_API_BASE = get_config_value("GROK_API_BASE", "https://api.x.ai/v1")
+GROK_MODEL = get_config_value("GROK_MODEL", "grok-2-latest")
+GROK_API_KEY = get_config_value("GROK_API_KEY")
+GEMINI_API_KEY = get_config_value("GEMINI_API_KEY")
+
+if not GROK_API_KEY:
+    st.error("GROK_API_KEY is missing. Set it in Streamlit secrets or .env.")
     st.stop()
 
-genai.configure(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-# Initialize model lazily with error handling
-@st.cache_resource
-def get_gemini_model():
+
+def call_grok(prompt: str) -> str:
+    url = f"{GROK_API_BASE.rstrip('/')}/chat/completions"
+    payload = {
+        "model": GROK_MODEL,
+        "messages": [
+            {"role": "system", "content": "Return only valid JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.4,
+        "max_tokens": 220,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {GROK_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
     try:
-        return genai.GenerativeModel(MODEL_NAME)
-    except Exception as e:
-        st.error(f"Failed to initialize Gemini model '{MODEL_NAME}': {e}")
-        st.info("Try setting GEMINI_MODEL in .env to 'gemini-pro' or 'gemini-1.5-pro'")
-        st.stop()
-        return None
+        with urllib.request.urlopen(req, timeout=30) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8") if exc.fp else str(exc)
+        raise RuntimeError(f"Grok API error: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Grok connection error: {exc}") from exc
+
+    result = json.loads(body)
+    return result["choices"][0]["message"]["content"]
 
 CHILD_ID = "demo_child"
 
@@ -238,12 +276,6 @@ def parse_model_output(raw_text: str) -> List[Dict[str, str]]:
 
 
 def generate_ai_options(category: str, context: Dict[str, str]) -> List[Dict[str, str]]:
-    model = get_gemini_model()
-    if not model:
-        st.error("Gemini model is not available.")
-        st.stop()
-        return []
-
     prompt_template = load_prompt_template()
     context_lines = [
         f"Child ID: {context['child_id']}",
@@ -275,26 +307,26 @@ def generate_ai_options(category: str, context: Dict[str, str]) -> List[Dict[str
     prompt = prompt_template.format(context="\n".join(context_lines))
 
     try:
-        response = model.generate_content(prompt)
-        if not getattr(response, "text", "").strip():
-            st.error("Gemini returned an empty response. Please try again.")
+        response_text = call_grok(prompt)
+        if not response_text.strip():
+            st.error("Grok returned an empty response. Please try again.")
             st.stop()
             return []
-        phrases = parse_model_output(response.text)
+        phrases = parse_model_output(response_text)
         return phrases
     except json.JSONDecodeError as e:
-        st.error(f"Failed to parse Gemini response as JSON: {e}")
-        st.info("Gemini must return valid JSON with exactly 3 phrases, each containing 'text' and 'emoji' fields.")
+        st.error(f"Failed to parse Grok response as JSON: {e}")
+        st.info("Grok must return valid JSON with exactly 3 phrases, each containing 'text' and 'emoji' fields.")
         st.stop()
         return []
     except ValueError as e:
-        st.error(f"Invalid response format from Gemini: {e}")
-        st.info("Gemini must return exactly 3 phrases, each with 'text' and 'emoji' fields.")
+        st.error(f"Invalid response format from Grok: {e}")
+        st.info("Grok must return exactly 3 phrases, each with 'text' and 'emoji' fields.")
         st.stop()
         return []
     except Exception as e:
-        st.error(f"Error calling Gemini API: {e}")
-        st.info("Please check your API key and model name in .env file.")
+        st.error(f"Error calling Grok API: {e}")
+        st.info("Please check your GROK_API_KEY and GROK_MODEL in secrets or .env.")
         st.stop()
         return []
 
@@ -966,8 +998,8 @@ def render_context_log() -> None:
             st.markdown("### Debug: Query Parameters")
             st.json(dict(query_params))
         
-        # Show what will be sent to Gemini
-        st.markdown("### Context Sent to Gemini")
+        # Show what will be sent to Grok
+        st.markdown("### Context Sent to Grok")
         context = build_context(st.session_state.selected_category or "N/A")
         context_lines = []
         for key, value in context.items():
@@ -1202,7 +1234,7 @@ def render_phrase_options() -> None:
         <h2 style="margin:10px 0 4px;font-size:17px;color:var(--text);">What do you want to say?</h2>
         <p style="margin:0;font-size:12px;color:var(--muted);">
             Based on the category and context, EchoMind suggests three short phrases.
-            Each phrase is generated by Gemini AI with a matching emoji.
+            Each phrase is generated by Grok AI with a matching emoji.
         </p>
     </div>
     """
