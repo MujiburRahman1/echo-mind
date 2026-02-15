@@ -1479,19 +1479,16 @@ def render_voice_output() -> None:
     </style>
     """, unsafe_allow_html=True)
     
-    if st.session_state.audio_file is None and st.session_state.last_phrase:
+    if st.button("▶ Play voice", key="play_voice", use_container_width=True):
         with st.spinner("Generating audio..."):
             st.session_state.audio_file = get_cached_audio(st.session_state.last_phrase)
-
-    if st.session_state.audio_file:
-        st.audio(st.session_state.audio_file, autoplay=True)
-    
-    if st.button("▶ Play again", key="play_again", use_container_width=True):
         st.session_state.play_triggered = True
 
-    # Show audio again if play button was clicked
     if st.session_state.get("play_triggered", False) and st.session_state.audio_file:
         st.audio(st.session_state.audio_file, autoplay=False)
+
+    if st.button("▶ Play again", key="play_again", use_container_width=True):
+        st.session_state.play_triggered = True
     
     if st.button("← Back to \"I want to speak\"", key="back_home", use_container_width=True):
         reset_flow()
