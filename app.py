@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
 import os
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -64,6 +64,7 @@ GROQ_MAX_TOKENS = int(get_config_value("GROQ_MAX_TOKENS", "160"))
 GROQ_TEMPERATURE = float(get_config_value("GROQ_TEMPERATURE", "0.2"))
 GROQ_RETRIES = int(get_config_value("GROQ_RETRIES", "2"))
 FAST_MODE = get_bool_config("FAST_MODE", True)
+AUDIO_PREFETCH = get_bool_config("AUDIO_PREFETCH", True)
 
 if not GROQ_API_KEY:
     st.error("GROQ_API_KEY is missing. Set it in Streamlit secrets or .env.")
@@ -129,6 +130,7 @@ def init_session_state() -> None:
         "options": [],
         "last_phrase": None,
         "audio_file": None,
+        "audio_cache": {},
         "play_triggered": False,
     }
     for key, value in defaults.items():
@@ -368,18 +370,41 @@ def fetch_options(category: str) -> None:
     if not phrases:
         return  # Error already displayed by generate_ai_options
     st.session_state.options = build_option_payload(category, phrases)
+    if AUDIO_PREFETCH:
+        prefetch_audio(st.session_state.options)
     st.session_state.stage = "phrases"
 
 
-def synthesize_audio(text: str) -> Optional[str]:
+def synthesize_audio(text: str) -> Optional[bytes]:
     try:
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-        gTTS(text=text, lang="en").write_to_fp(tmp)
-        tmp.close()
-        return tmp.name
+        buffer = io.BytesIO()
+        gTTS(text=text, lang="en").write_to_fp(buffer)
+        return buffer.getvalue()
     except Exception as exc:  # pragma: no cover - Streamlit surface
         st.warning(f"Unable to generate audio: {exc}")
         return None
+
+
+def get_cached_audio(text: str) -> Optional[bytes]:
+    cache = st.session_state.get("audio_cache", {})
+    if text in cache:
+        return cache[text]
+    audio = synthesize_audio(text)
+    if audio:
+        cache[text] = audio
+        st.session_state.audio_cache = cache
+    return audio
+
+
+def prefetch_audio(options: List[Dict[str, str]]) -> None:
+    cache = st.session_state.get("audio_cache", {})
+    for option in options:
+        text = option.get("text", "")
+        if text and text not in cache:
+            audio = synthesize_audio(text)
+            if audio:
+                cache[text] = audio
+    st.session_state.audio_cache = cache
 
 
 def reset_flow() -> None:
@@ -1304,7 +1329,7 @@ def render_phrase_options() -> None:
         button_text = f"{option['emoji']}  {option['text']}"
         if st.button(button_text, key=f"phrase-{idx}", use_container_width=True):
             st.session_state.last_phrase = option["text"]
-            st.session_state.audio_file = synthesize_audio(option["text"])
+            st.session_state.audio_file = get_cached_audio(option["text"])
 
             # Store the phrase selection in Qdrant for personalization
             try:
