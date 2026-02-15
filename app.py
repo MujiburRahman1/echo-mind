@@ -50,12 +50,20 @@ def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
         return default
 
 
+def get_bool_config(key: str, default: bool = False) -> bool:
+    value = get_config_value(key)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 GROQ_MODEL = get_config_value("GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_API_KEY = get_config_value("GROQ_API_KEY")
 GEMINI_API_KEY = get_config_value("GEMINI_API_KEY")
 GROQ_MAX_TOKENS = int(get_config_value("GROQ_MAX_TOKENS", "160"))
 GROQ_TEMPERATURE = float(get_config_value("GROQ_TEMPERATURE", "0.2"))
 GROQ_RETRIES = int(get_config_value("GROQ_RETRIES", "2"))
+FAST_MODE = get_bool_config("FAST_MODE", True)
 
 if not GROQ_API_KEY:
     st.error("GROQ_API_KEY is missing. Set it in Streamlit secrets or .env.")
@@ -69,7 +77,7 @@ def get_groq_client() -> Groq:
     return Groq(api_key=GROQ_API_KEY)
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=3600)
 def _cached_groq_response(prompt: str, model: str, temperature: float, max_tokens: int) -> str:
     client = get_groq_client()
     response = client.chat.completions.create(
@@ -278,23 +286,32 @@ def parse_model_output(raw_text: str) -> List[Dict[str, str]]:
 
 def generate_ai_options(category: str, context: Dict[str, str]) -> List[Dict[str, str]]:
     prompt_template = load_prompt_template()
-    context_lines = [
-        f"Child ID: {context['child_id']}",
-        f"Category: {context['category']}",
-        f"Date: {context['date']}",
-        f"Time: {context['time']}",
-        f"Day of week: {context['day_of_week']}",
-        f"Time of day: {context['time_of_day']}",
-        f"Location: {context['location']}",
-    ]
-    if context.get("latitude") and context.get("longitude"):
-        context_lines.append(f"GPS coordinates: {context['latitude']}, {context['longitude']}")
-    if context.get("last_phrase"):
-        context_lines.append(f"Last phrase spoken: {context['last_phrase']}")
+    if FAST_MODE:
+        # Keep the prompt minimal for faster responses and better cache hits.
+        context_lines = [
+            f"Category: {context['category']}",
+            f"Time of day: {context['time_of_day']}",
+        ]
+        if context.get("last_phrase"):
+            context_lines.append(f"Last phrase spoken: {context['last_phrase']}")
+    else:
+        context_lines = [
+            f"Child ID: {context['child_id']}",
+            f"Category: {context['category']}",
+            f"Date: {context['date']}",
+            f"Time: {context['time']}",
+            f"Day of week: {context['day_of_week']}",
+            f"Time of day: {context['time_of_day']}",
+            f"Location: {context['location']}",
+        ]
+        if context.get("latitude") and context.get("longitude"):
+            context_lines.append(f"GPS coordinates: {context['latitude']}, {context['longitude']}")
+        if context.get("last_phrase"):
+            context_lines.append(f"Last phrase spoken: {context['last_phrase']}")
 
     # Add personalization context from Qdrant if available
     try:
-        if st.session_state.get("qdrant_initialized"):
+        if st.session_state.get("qdrant_initialized") and not FAST_MODE:
             personalization = qdrant_manager.get_personalization_context(
                 child_id=context["child_id"],
                 category=category,
