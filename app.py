@@ -48,7 +48,7 @@ def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
         return default
 
 
-MODEL_NAME = get_config_value("GEMINI_MODEL", "gemini-1.5-flash")
+MODEL_NAME = get_config_value("GEMINI_MODEL", "gemini-1.5-pro")
 GEMINI_API_KEY = get_config_value("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
@@ -64,7 +64,7 @@ def get_gemini_model():
         return genai.GenerativeModel(MODEL_NAME)
     except Exception as e:
         st.error(f"Failed to initialize Gemini model '{MODEL_NAME}': {e}")
-        st.info("Try setting GEMINI_MODEL in secrets to 'gemini-1.5-flash' or 'gemini-1.5-pro'")
+        st.info("Try setting GEMINI_MODEL in secrets to 'gemini-1.5-pro'")
         st.stop()
         return None
 
