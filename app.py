@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import concurrent.futures
-import io
 import json
 import os
-import time
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -13,7 +11,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from gtts import gTTS
-from groq import Groq
 import google.generativeai as genai
 
 import qdrant_manager
@@ -41,79 +38,25 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
-    value = os.getenv(key)
-    if value:
-        return value
-    try:
-        return st.secrets.get(key, default)
-    except Exception:
-        return default
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-pro")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-
-def get_bool_config(key: str, default: bool = False) -> bool:
-    value = get_config_value(key)
-    if value is None:
-        return default
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-GROQ_MODEL = get_config_value("GROQ_MODEL", "llama-3.1-8b-instant")
-GROQ_API_KEY = get_config_value("GROQ_API_KEY")
-GEMINI_API_KEY = get_config_value("GEMINI_API_KEY")
-GROQ_MAX_TOKENS = int(get_config_value("GROQ_MAX_TOKENS", "160"))
-GROQ_TEMPERATURE = float(get_config_value("GROQ_TEMPERATURE", "0.2"))
-GROQ_RETRIES = int(get_config_value("GROQ_RETRIES", "2"))
-GROQ_TIMEOUT_SEC = float(get_config_value("GROQ_TIMEOUT_SEC", "2.5"))
-FAST_MODE = get_bool_config("FAST_MODE", True)
-AUDIO_PREFETCH = get_bool_config("AUDIO_PREFETCH", False)
-USE_LOCAL_FALLBACK = get_bool_config("USE_LOCAL_FALLBACK", True)
-
-if not GROQ_API_KEY:
-    st.error("GROQ_API_KEY is missing. Set it in Streamlit secrets or .env.")
+if not GEMINI_API_KEY:
+    st.error("GEMINI_API_KEY is missing. Set it in your .env file.")
     st.stop()
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
+# Initialize model lazily with error handling
 @st.cache_resource
-def get_groq_client() -> Groq:
-    return Groq(api_key=GROQ_API_KEY)
-
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def _cached_groq_response(prompt: str, model: str, temperature: float, max_tokens: int) -> str:
-    client = get_groq_client()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": "Return only valid JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content or ""
-
-
-def call_groq(prompt: str) -> str:
-    last_error: Optional[Exception] = None
-    for attempt in range(GROQ_RETRIES + 1):
-        try:
-            return _cached_groq_response(prompt, GROQ_MODEL, GROQ_TEMPERATURE, GROQ_MAX_TOKENS)
-        except Exception as exc:
-            last_error = exc
-            if attempt < GROQ_RETRIES:
-                time.sleep(0.8 * (attempt + 1))
-                continue
-            raise RuntimeError(f"Groq API error: {exc}") from exc
-    raise RuntimeError(f"Groq API error: {last_error}")
-
-
-def call_groq_with_timeout(prompt: str, timeout_sec: float) -> str:
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(call_groq, prompt)
-        return future.result(timeout=timeout_sec)
+def get_gemini_model():
+    try:
+        return genai.GenerativeModel(MODEL_NAME)
+    except Exception as e:
+        st.error(f"Failed to initialize Gemini model '{MODEL_NAME}': {e}")
+        st.info("Try setting GEMINI_MODEL in .env to 'gemini-pro' or 'gemini-1.5-pro'")
+        st.stop()
+        return None
 
 CHILD_ID = "demo_child"
 
@@ -122,29 +65,6 @@ CATEGORY_CONFIG: Dict[str, str] = {
     "Feelings & Sensory": "💛",
     "Activities & People": "🎨",
     "Help & Safety": "🆘",
-}
-
-FALLBACK_PHRASES: Dict[str, List[Dict[str, str]]] = {
-    "Body & Needs": [
-        {"text": "I need water", "emoji": "💧"},
-        {"text": "I am hungry", "emoji": "🍎"},
-        {"text": "I need the bathroom", "emoji": "🚽"},
-    ],
-    "Feelings & Sensory": [
-        {"text": "I feel calm", "emoji": "😌"},
-        {"text": "I feel upset", "emoji": "😟"},
-        {"text": "Too loud", "emoji": "🔊"},
-    ],
-    "Activities & People": [
-        {"text": "I want to play", "emoji": "🧩"},
-        {"text": "I want to go outside", "emoji": "🌳"},
-        {"text": "I want to see mom", "emoji": "👩"},
-    ],
-    "Help & Safety": [
-        {"text": "I need help", "emoji": "🆘"},
-        {"text": "I feel unsafe", "emoji": "⚠️"},
-        {"text": "Please stay with me", "emoji": "🤝"},
-    ],
 }
 
 
@@ -160,10 +80,8 @@ def init_session_state() -> None:
         "location_name": None,
         "gps_requested": False,
         "options": [],
-        "options_cache": {},
         "last_phrase": None,
         "audio_file": None,
-        "audio_cache": {},
         "play_triggered": False,
     }
     for key, value in defaults.items():
@@ -175,7 +93,7 @@ def get_current_datetime() -> Dict[str, str]:
     now = datetime.now()
     return {
         "date": now.strftime("%Y-%m-%d"),
-        "time": now.strftime("%H:%M"),
+        "time": now.strftime("%H:%M:%S"),
         "day_of_week": now.strftime("%A"),
         "time_of_day": "morning" if now.hour < 12 else "afternoon" if now.hour < 17 else "evening",
     }
@@ -320,33 +238,30 @@ def parse_model_output(raw_text: str) -> List[Dict[str, str]]:
 
 
 def generate_ai_options(category: str, context: Dict[str, str]) -> List[Dict[str, str]]:
+    model = get_gemini_model()
+    if not model:
+        st.error("Gemini model is not available.")
+        st.stop()
+        return []
+
     prompt_template = load_prompt_template()
-    if FAST_MODE:
-        # Keep the prompt minimal for faster responses and better cache hits.
-        context_lines = [
-            f"Category: {context['category']}",
-            f"Time of day: {context['time_of_day']}",
-        ]
-        if context.get("last_phrase"):
-            context_lines.append(f"Last phrase spoken: {context['last_phrase']}")
-    else:
-        context_lines = [
-            f"Child ID: {context['child_id']}",
-            f"Category: {context['category']}",
-            f"Date: {context['date']}",
-            f"Time: {context['time']}",
-            f"Day of week: {context['day_of_week']}",
-            f"Time of day: {context['time_of_day']}",
-            f"Location: {context['location']}",
-        ]
-        if context.get("latitude") and context.get("longitude"):
-            context_lines.append(f"GPS coordinates: {context['latitude']}, {context['longitude']}")
-        if context.get("last_phrase"):
-            context_lines.append(f"Last phrase spoken: {context['last_phrase']}")
+    context_lines = [
+        f"Child ID: {context['child_id']}",
+        f"Category: {context['category']}",
+        f"Date: {context['date']}",
+        f"Time: {context['time']}",
+        f"Day of week: {context['day_of_week']}",
+        f"Time of day: {context['time_of_day']}",
+        f"Location: {context['location']}",
+    ]
+    if context.get("latitude") and context.get("longitude"):
+        context_lines.append(f"GPS coordinates: {context['latitude']}, {context['longitude']}")
+    if context.get("last_phrase"):
+        context_lines.append(f"Last phrase spoken: {context['last_phrase']}")
 
     # Add personalization context from Qdrant if available
     try:
-        if st.session_state.get("qdrant_initialized") and not FAST_MODE:
+        if st.session_state.get("qdrant_initialized"):
             personalization = qdrant_manager.get_personalization_context(
                 child_id=context["child_id"],
                 category=category,
@@ -360,33 +275,26 @@ def generate_ai_options(category: str, context: Dict[str, str]) -> List[Dict[str
     prompt = prompt_template.format(context="\n".join(context_lines))
 
     try:
-        response_text = call_groq_with_timeout(prompt, GROQ_TIMEOUT_SEC)
-        if not response_text.strip():
-            st.error("Groq returned an empty response. Please try again.")
+        response = model.generate_content(prompt)
+        if not getattr(response, "text", "").strip():
+            st.error("Gemini returned an empty response. Please try again.")
             st.stop()
             return []
-        phrases = parse_model_output(response_text)
+        phrases = parse_model_output(response.text)
         return phrases
-    except TimeoutError:
-        if USE_LOCAL_FALLBACK:
-            st.info("Using fast local suggestions to avoid delay.")
-            return FALLBACK_PHRASES.get(category, [])
-        st.error("Groq response timed out. Please try again.")
-        st.stop()
-        return []
     except json.JSONDecodeError as e:
-        st.error(f"Failed to parse Groq response as JSON: {e}")
-        st.info("Groq must return valid JSON with exactly 3 phrases, each containing 'text' and 'emoji' fields.")
+        st.error(f"Failed to parse Gemini response as JSON: {e}")
+        st.info("Gemini must return valid JSON with exactly 3 phrases, each containing 'text' and 'emoji' fields.")
         st.stop()
         return []
     except ValueError as e:
-        st.error(f"Invalid response format from Groq: {e}")
-        st.info("Groq must return exactly 3 phrases, each with 'text' and 'emoji' fields.")
+        st.error(f"Invalid response format from Gemini: {e}")
+        st.info("Gemini must return exactly 3 phrases, each with 'text' and 'emoji' fields.")
         st.stop()
         return []
     except Exception as e:
-        st.error(f"Error calling Groq API: {e}")
-        st.info("Please check your GROQ_API_KEY and GROQ_MODEL in secrets or .env.")
+        st.error(f"Error calling Gemini API: {e}")
+        st.info("Please check your API key and model name in .env file.")
         st.stop()
         return []
 
@@ -405,54 +313,23 @@ def build_option_payload(category: str, phrases: List[Dict[str, str]]) -> List[D
 
 
 def fetch_options(category: str) -> None:
-    cache = st.session_state.get("options_cache", {})
-    if FAST_MODE and category in cache:
-        st.session_state.options = cache[category]
-        st.session_state.stage = "phrases"
-        return
-
     context = build_context(category)
     phrases = generate_ai_options(category, context)
     if not phrases:
         return  # Error already displayed by generate_ai_options
     st.session_state.options = build_option_payload(category, phrases)
-    cache[category] = st.session_state.options
-    st.session_state.options_cache = cache
-    if AUDIO_PREFETCH:
-        prefetch_audio(st.session_state.options)
     st.session_state.stage = "phrases"
 
 
-def synthesize_audio(text: str) -> Optional[bytes]:
+def synthesize_audio(text: str) -> Optional[str]:
     try:
-        buffer = io.BytesIO()
-        gTTS(text=text, lang="en").write_to_fp(buffer)
-        return buffer.getvalue()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        gTTS(text=text, lang="en").write_to_fp(tmp)
+        tmp.close()
+        return tmp.name
     except Exception as exc:  # pragma: no cover - Streamlit surface
         st.warning(f"Unable to generate audio: {exc}")
         return None
-
-
-def get_cached_audio(text: str) -> Optional[bytes]:
-    cache = st.session_state.get("audio_cache", {})
-    if text in cache:
-        return cache[text]
-    audio = synthesize_audio(text)
-    if audio:
-        cache[text] = audio
-        st.session_state.audio_cache = cache
-    return audio
-
-
-def prefetch_audio(options: List[Dict[str, str]]) -> None:
-    cache = st.session_state.get("audio_cache", {})
-    for option in options:
-        text = option.get("text", "")
-        if text and text not in cache:
-            audio = synthesize_audio(text)
-            if audio:
-                cache[text] = audio
-    st.session_state.audio_cache = cache
 
 
 def reset_flow() -> None:
@@ -1089,8 +966,8 @@ def render_context_log() -> None:
             st.markdown("### Debug: Query Parameters")
             st.json(dict(query_params))
         
-        # Show what will be sent to Groq
-        st.markdown("### Context Sent to Groq")
+        # Show what will be sent to Gemini
+        st.markdown("### Context Sent to Gemini")
         context = build_context(st.session_state.selected_category or "N/A")
         context_lines = []
         for key, value in context.items():
@@ -1325,7 +1202,7 @@ def render_phrase_options() -> None:
         <h2 style="margin:10px 0 4px;font-size:17px;color:var(--text);">What do you want to say?</h2>
         <p style="margin:0;font-size:12px;color:var(--muted);">
             Based on the category and context, EchoMind suggests three short phrases.
-            Each phrase is generated by Groq AI with a matching emoji.
+            Each phrase is generated by Gemini AI with a matching emoji.
         </p>
     </div>
     """
@@ -1377,7 +1254,7 @@ def render_phrase_options() -> None:
         button_text = f"{option['emoji']}  {option['text']}"
         if st.button(button_text, key=f"phrase-{idx}", use_container_width=True):
             st.session_state.last_phrase = option["text"]
-            st.session_state.audio_file = None
+            st.session_state.audio_file = synthesize_audio(option["text"])
 
             # Store the phrase selection in Qdrant for personalization
             try:
@@ -1527,16 +1404,15 @@ def render_voice_output() -> None:
     </style>
     """, unsafe_allow_html=True)
     
-    if st.button("▶ Play voice", key="play_voice", use_container_width=True):
-        with st.spinner("Generating audio..."):
-            st.session_state.audio_file = get_cached_audio(st.session_state.last_phrase)
-        st.session_state.play_triggered = True
-
-    if st.session_state.get("play_triggered", False) and st.session_state.audio_file:
-        st.audio(st.session_state.audio_file, autoplay=False)
-
+    if st.session_state.audio_file:
+        st.audio(st.session_state.audio_file, autoplay=True)
+    
     if st.button("▶ Play again", key="play_again", use_container_width=True):
         st.session_state.play_triggered = True
+
+    # Show audio again if play button was clicked
+    if st.session_state.get("play_triggered", False) and st.session_state.audio_file:
+        st.audio(st.session_state.audio_file, autoplay=False)
     
     if st.button("← Back to \"I want to speak\"", key="back_home", use_container_width=True):
         reset_flow()
@@ -1598,8 +1474,8 @@ def main() -> None:
         render_categories()
     elif stage == "loading":
         # Fetch options and transition to phrases
-        with st.spinner("Loading phrases..."):
-            fetch_options(st.session_state.selected_category)
+        st.spinner("Loading phrases...")
+        fetch_options(st.session_state.selected_category)
         st.rerun()
     elif stage == "phrases":
         render_phrase_options()
