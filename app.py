@@ -64,7 +64,7 @@ GROQ_MAX_TOKENS = int(get_config_value("GROQ_MAX_TOKENS", "160"))
 GROQ_TEMPERATURE = float(get_config_value("GROQ_TEMPERATURE", "0.2"))
 GROQ_RETRIES = int(get_config_value("GROQ_RETRIES", "2"))
 FAST_MODE = get_bool_config("FAST_MODE", True)
-AUDIO_PREFETCH = get_bool_config("AUDIO_PREFETCH", True)
+AUDIO_PREFETCH = get_bool_config("AUDIO_PREFETCH", False)
 
 if not GROQ_API_KEY:
     st.error("GROQ_API_KEY is missing. Set it in Streamlit secrets or .env.")
@@ -1329,7 +1329,7 @@ def render_phrase_options() -> None:
         button_text = f"{option['emoji']}  {option['text']}"
         if st.button(button_text, key=f"phrase-{idx}", use_container_width=True):
             st.session_state.last_phrase = option["text"]
-            st.session_state.audio_file = get_cached_audio(option["text"])
+            st.session_state.audio_file = None
 
             # Store the phrase selection in Qdrant for personalization
             try:
@@ -1479,6 +1479,10 @@ def render_voice_output() -> None:
     </style>
     """, unsafe_allow_html=True)
     
+    if st.session_state.audio_file is None and st.session_state.last_phrase:
+        with st.spinner("Generating audio..."):
+            st.session_state.audio_file = get_cached_audio(st.session_state.last_phrase)
+
     if st.session_state.audio_file:
         st.audio(st.session_state.audio_file, autoplay=True)
     
