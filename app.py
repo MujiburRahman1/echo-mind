@@ -13,7 +13,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from gtts import gTTS
-import google.generativeai as genai
 
 import qdrant_manager
 
@@ -52,16 +51,12 @@ def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
 
 GROK_API_BASE = get_config_value("GROK_API_BASE", "https://api.x.ai/v1")
 GROK_MODEL = get_config_value("GROK_MODEL", "grok-2-latest")
-GROK_API_KEY = get_config_value("GROK_API_KEY")
-GEMINI_API_KEY = get_config_value("GEMINI_API_KEY")
+GROQ_API_KEY = get_config_value("GROQ_API_KEY")
+GROK_API_KEY = get_config_value("GROK_API_KEY") or GROQ_API_KEY
 
 if not GROK_API_KEY:
-    st.error("GROK_API_KEY is missing. Set it in Streamlit secrets or .env.")
+    st.error("GROK_API_KEY (or GROQ_API_KEY) is missing. Set it in Streamlit secrets or .env.")
     st.stop()
-
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
 
 def call_grok(prompt: str) -> str:
     url = f"{GROK_API_BASE.rstrip('/')}/chat/completions"
