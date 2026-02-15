@@ -64,19 +64,22 @@ if not GROQ_API_KEY:
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+@st.cache_resource
+def get_groq_client() -> Groq:
+    return Groq(api_key=GROQ_API_KEY)
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def _cached_groq_response(prompt: str) -> str:
-    response = groq_client.chat.completions.create(
-        model=GROQ_MODEL,
+def _cached_groq_response(prompt: str, model: str, temperature: float, max_tokens: int) -> str:
+    client = get_groq_client()
+    response = client.chat.completions.create(
+        model=model,
         messages=[
             {"role": "system", "content": "Return only valid JSON."},
             {"role": "user", "content": prompt},
         ],
-        temperature=GROQ_TEMPERATURE,
-        max_tokens=GROQ_MAX_TOKENS,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
     return response.choices[0].message.content or ""
 
@@ -85,7 +88,7 @@ def call_groq(prompt: str) -> str:
     last_error: Optional[Exception] = None
     for attempt in range(GROQ_RETRIES + 1):
         try:
-            return _cached_groq_response(prompt)
+            return _cached_groq_response(prompt, GROQ_MODEL, GROQ_TEMPERATURE, GROQ_MAX_TOKENS)
         except Exception as exc:
             last_error = exc
             if attempt < GROQ_RETRIES:
@@ -129,7 +132,7 @@ def get_current_datetime() -> Dict[str, str]:
     now = datetime.now()
     return {
         "date": now.strftime("%Y-%m-%d"),
-        "time": now.strftime("%H:%M:%S"),
+        "time": now.strftime("%H:%M"),
         "day_of_week": now.strftime("%A"),
         "time_of_day": "morning" if now.hour < 12 else "afternoon" if now.hour < 17 else "evening",
     }
