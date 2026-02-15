@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -13,6 +11,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from gtts import gTTS
+from groq import Groq
+import google.generativeai as genai
 
 import qdrant_manager
 
@@ -49,47 +49,34 @@ def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
         return default
 
 
-GROK_API_BASE = get_config_value("GROK_API_BASE", "https://api.x.ai/v1")
-GROK_MODEL = get_config_value("GROK_MODEL", "grok-2-latest")
+GROQ_MODEL = get_config_value("GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_API_KEY = get_config_value("GROQ_API_KEY")
-GROK_API_KEY = get_config_value("GROK_API_KEY") or GROQ_API_KEY
+GEMINI_API_KEY = get_config_value("GEMINI_API_KEY")
 
-if not GROK_API_KEY:
-    st.error("GROK_API_KEY (or GROQ_API_KEY) is missing. Set it in Streamlit secrets or .env.")
+if not GROQ_API_KEY:
+    st.error("GROQ_API_KEY is missing. Set it in Streamlit secrets or .env.")
     st.stop()
 
-def call_grok(prompt: str) -> str:
-    url = f"{GROK_API_BASE.rstrip('/')}/chat/completions"
-    payload = {
-        "model": GROK_MODEL,
-        "messages": [
-            {"role": "system", "content": "Return only valid JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.4,
-        "max_tokens": 220,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Authorization": f"Bearer {GROK_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8") if exc.fp else str(exc)
-        raise RuntimeError(f"Grok API error: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Grok connection error: {exc}") from exc
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-    result = json.loads(body)
-    return result["choices"][0]["message"]["content"]
+groq_client = Groq(api_key=GROQ_API_KEY)
+
+
+def call_groq(prompt: str) -> str:
+    try:
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": "Return only valid JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.4,
+            max_tokens=220,
+        )
+        return response.choices[0].message.content or ""
+    except Exception as exc:
+        raise RuntimeError(f"Groq API error: {exc}") from exc
 
 CHILD_ID = "demo_child"
 
@@ -302,26 +289,26 @@ def generate_ai_options(category: str, context: Dict[str, str]) -> List[Dict[str
     prompt = prompt_template.format(context="\n".join(context_lines))
 
     try:
-        response_text = call_grok(prompt)
+        response_text = call_groq(prompt)
         if not response_text.strip():
-            st.error("Grok returned an empty response. Please try again.")
+            st.error("Groq returned an empty response. Please try again.")
             st.stop()
             return []
         phrases = parse_model_output(response_text)
         return phrases
     except json.JSONDecodeError as e:
-        st.error(f"Failed to parse Grok response as JSON: {e}")
-        st.info("Grok must return valid JSON with exactly 3 phrases, each containing 'text' and 'emoji' fields.")
+        st.error(f"Failed to parse Groq response as JSON: {e}")
+        st.info("Groq must return valid JSON with exactly 3 phrases, each containing 'text' and 'emoji' fields.")
         st.stop()
         return []
     except ValueError as e:
-        st.error(f"Invalid response format from Grok: {e}")
-        st.info("Grok must return exactly 3 phrases, each with 'text' and 'emoji' fields.")
+        st.error(f"Invalid response format from Groq: {e}")
+        st.info("Groq must return exactly 3 phrases, each with 'text' and 'emoji' fields.")
         st.stop()
         return []
     except Exception as e:
-        st.error(f"Error calling Grok API: {e}")
-        st.info("Please check your GROK_API_KEY and GROK_MODEL in secrets or .env.")
+        st.error(f"Error calling Groq API: {e}")
+        st.info("Please check your GROQ_API_KEY and GROQ_MODEL in secrets or .env.")
         st.stop()
         return []
 
@@ -993,8 +980,8 @@ def render_context_log() -> None:
             st.markdown("### Debug: Query Parameters")
             st.json(dict(query_params))
         
-        # Show what will be sent to Grok
-        st.markdown("### Context Sent to Grok")
+        # Show what will be sent to Groq
+        st.markdown("### Context Sent to Groq")
         context = build_context(st.session_state.selected_category or "N/A")
         context_lines = []
         for key, value in context.items():
@@ -1229,7 +1216,7 @@ def render_phrase_options() -> None:
         <h2 style="margin:10px 0 4px;font-size:17px;color:var(--text);">What do you want to say?</h2>
         <p style="margin:0;font-size:12px;color:var(--muted);">
             Based on the category and context, EchoMind suggests three short phrases.
-            Each phrase is generated by Grok AI with a matching emoji.
+            Each phrase is generated by Groq AI with a matching emoji.
         </p>
     </div>
     """
