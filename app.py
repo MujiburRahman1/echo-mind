@@ -38,7 +38,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-pro")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
@@ -54,7 +54,7 @@ def get_gemini_model():
         return genai.GenerativeModel(MODEL_NAME)
     except Exception as e:
         st.error(f"Failed to initialize Gemini model '{MODEL_NAME}': {e}")
-        st.info("Try setting GEMINI_MODEL in .env to 'gemini-pro' or 'gemini-1.5-pro'")
+        st.info("Try setting GEMINI_MODEL in .env to 'gemini-2.5-flash-lite' or 'gemini-1.5-pro'")
         st.stop()
         return None
 
