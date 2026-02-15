@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -52,6 +53,9 @@ def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
 GROQ_MODEL = get_config_value("GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_API_KEY = get_config_value("GROQ_API_KEY")
 GEMINI_API_KEY = get_config_value("GEMINI_API_KEY")
+GROQ_MAX_TOKENS = int(get_config_value("GROQ_MAX_TOKENS", "160"))
+GROQ_TEMPERATURE = float(get_config_value("GROQ_TEMPERATURE", "0.2"))
+GROQ_RETRIES = int(get_config_value("GROQ_RETRIES", "2"))
 
 if not GROQ_API_KEY:
     st.error("GROQ_API_KEY is missing. Set it in Streamlit secrets or .env.")
@@ -63,20 +67,32 @@ if GEMINI_API_KEY:
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_groq_response(prompt: str) -> str:
+    response = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": "Return only valid JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=GROQ_TEMPERATURE,
+        max_tokens=GROQ_MAX_TOKENS,
+    )
+    return response.choices[0].message.content or ""
+
+
 def call_groq(prompt: str) -> str:
-    try:
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": "Return only valid JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.4,
-            max_tokens=220,
-        )
-        return response.choices[0].message.content or ""
-    except Exception as exc:
-        raise RuntimeError(f"Groq API error: {exc}") from exc
+    last_error: Optional[Exception] = None
+    for attempt in range(GROQ_RETRIES + 1):
+        try:
+            return _cached_groq_response(prompt)
+        except Exception as exc:
+            last_error = exc
+            if attempt < GROQ_RETRIES:
+                time.sleep(0.8 * (attempt + 1))
+                continue
+            raise RuntimeError(f"Groq API error: {exc}") from exc
+    raise RuntimeError(f"Groq API error: {last_error}")
 
 CHILD_ID = "demo_child"
 
@@ -1488,8 +1504,8 @@ def main() -> None:
         render_categories()
     elif stage == "loading":
         # Fetch options and transition to phrases
-        st.spinner("Loading phrases...")
-        fetch_options(st.session_state.selected_category)
+        with st.spinner("Loading phrases..."):
+            fetch_options(st.session_state.selected_category)
         st.rerun()
     elif stage == "phrases":
         render_phrase_options()
