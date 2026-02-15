@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import io
 import json
 import os
@@ -63,8 +64,10 @@ GEMINI_API_KEY = get_config_value("GEMINI_API_KEY")
 GROQ_MAX_TOKENS = int(get_config_value("GROQ_MAX_TOKENS", "160"))
 GROQ_TEMPERATURE = float(get_config_value("GROQ_TEMPERATURE", "0.2"))
 GROQ_RETRIES = int(get_config_value("GROQ_RETRIES", "2"))
+GROQ_TIMEOUT_SEC = float(get_config_value("GROQ_TIMEOUT_SEC", "2.5"))
 FAST_MODE = get_bool_config("FAST_MODE", True)
 AUDIO_PREFETCH = get_bool_config("AUDIO_PREFETCH", False)
+USE_LOCAL_FALLBACK = get_bool_config("USE_LOCAL_FALLBACK", True)
 
 if not GROQ_API_KEY:
     st.error("GROQ_API_KEY is missing. Set it in Streamlit secrets or .env.")
@@ -106,6 +109,12 @@ def call_groq(prompt: str) -> str:
             raise RuntimeError(f"Groq API error: {exc}") from exc
     raise RuntimeError(f"Groq API error: {last_error}")
 
+
+def call_groq_with_timeout(prompt: str, timeout_sec: float) -> str:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(call_groq, prompt)
+        return future.result(timeout=timeout_sec)
+
 CHILD_ID = "demo_child"
 
 CATEGORY_CONFIG: Dict[str, str] = {
@@ -113,6 +122,29 @@ CATEGORY_CONFIG: Dict[str, str] = {
     "Feelings & Sensory": "💛",
     "Activities & People": "🎨",
     "Help & Safety": "🆘",
+}
+
+FALLBACK_PHRASES: Dict[str, List[Dict[str, str]]] = {
+    "Body & Needs": [
+        {"text": "I need water", "emoji": "💧"},
+        {"text": "I am hungry", "emoji": "🍎"},
+        {"text": "I need the bathroom", "emoji": "🚽"},
+    ],
+    "Feelings & Sensory": [
+        {"text": "I feel calm", "emoji": "😌"},
+        {"text": "I feel upset", "emoji": "😟"},
+        {"text": "Too loud", "emoji": "🔊"},
+    ],
+    "Activities & People": [
+        {"text": "I want to play", "emoji": "🧩"},
+        {"text": "I want to go outside", "emoji": "🌳"},
+        {"text": "I want to see mom", "emoji": "👩"},
+    ],
+    "Help & Safety": [
+        {"text": "I need help", "emoji": "🆘"},
+        {"text": "I feel unsafe", "emoji": "⚠️"},
+        {"text": "Please stay with me", "emoji": "🤝"},
+    ],
 }
 
 
@@ -128,6 +160,7 @@ def init_session_state() -> None:
         "location_name": None,
         "gps_requested": False,
         "options": [],
+        "options_cache": {},
         "last_phrase": None,
         "audio_file": None,
         "audio_cache": {},
@@ -327,13 +360,20 @@ def generate_ai_options(category: str, context: Dict[str, str]) -> List[Dict[str
     prompt = prompt_template.format(context="\n".join(context_lines))
 
     try:
-        response_text = call_groq(prompt)
+        response_text = call_groq_with_timeout(prompt, GROQ_TIMEOUT_SEC)
         if not response_text.strip():
             st.error("Groq returned an empty response. Please try again.")
             st.stop()
             return []
         phrases = parse_model_output(response_text)
         return phrases
+    except TimeoutError:
+        if USE_LOCAL_FALLBACK:
+            st.info("Using fast local suggestions to avoid delay.")
+            return FALLBACK_PHRASES.get(category, [])
+        st.error("Groq response timed out. Please try again.")
+        st.stop()
+        return []
     except json.JSONDecodeError as e:
         st.error(f"Failed to parse Groq response as JSON: {e}")
         st.info("Groq must return valid JSON with exactly 3 phrases, each containing 'text' and 'emoji' fields.")
@@ -365,11 +405,19 @@ def build_option_payload(category: str, phrases: List[Dict[str, str]]) -> List[D
 
 
 def fetch_options(category: str) -> None:
+    cache = st.session_state.get("options_cache", {})
+    if FAST_MODE and category in cache:
+        st.session_state.options = cache[category]
+        st.session_state.stage = "phrases"
+        return
+
     context = build_context(category)
     phrases = generate_ai_options(category, context)
     if not phrases:
         return  # Error already displayed by generate_ai_options
     st.session_state.options = build_option_payload(category, phrases)
+    cache[category] = st.session_state.options
+    st.session_state.options_cache = cache
     if AUDIO_PREFETCH:
         prefetch_audio(st.session_state.options)
     st.session_state.stage = "phrases"
