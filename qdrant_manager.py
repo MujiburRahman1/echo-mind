@@ -25,8 +25,24 @@ QDRANT_COLLECTION = "echomind_phrases"
 EMBEDDING_MODEL = "models/embedding-001"
 EMBEDDING_DIM = 768  # Gemini embedding dimension
 
-# Initialize Qdrant client in local mode (no server needed)
-client = QdrantClient(path=str(QDRANT_PATH))
+QDRANT_DISABLED = os.getenv("QDRANT_DISABLED", "").lower() in {"1", "true", "yes"}
+_client: Optional[QdrantClient] = None
+
+
+def _get_client() -> Optional[QdrantClient]:
+    """Return a Qdrant client or None if disabled/unavailable."""
+    global _client
+    if QDRANT_DISABLED:
+        return None
+    if _client is not None:
+        return _client
+    try:
+        QDRANT_PATH.mkdir(parents=True, exist_ok=True)
+        _client = QdrantClient(path=str(QDRANT_PATH))
+    except Exception as e:
+        print(f"Qdrant disabled due to init error: {e}")
+        _client = None
+    return _client
 
 # Counter for unique point IDs
 _point_counter = {}
@@ -43,6 +59,9 @@ def _get_next_point_id(child_id: str) -> int:
 def init_qdrant() -> None:
     """Initialize Qdrant collection if it doesn't exist"""
     try:
+        client = _get_client()
+        if not client:
+            return
         # Check if collection exists
         collections = client.get_collections().collections
         collection_names = [col.name for col in collections]
@@ -61,7 +80,7 @@ def init_qdrant() -> None:
             print(f"✓ Qdrant collection '{QDRANT_COLLECTION}' already exists")
     except Exception as e:
         print(f"Error initializing Qdrant: {e}")
-        raise
+        return
 
 
 def generate_embedding(text: str) -> Optional[List[float]]:
@@ -85,6 +104,9 @@ def store_phrase(
 ) -> bool:
     """Store a phrase selection with context in Qdrant for personalization"""
     try:
+        client = _get_client()
+        if not client:
+            return False
         # Build context string for embedding
         context_str = (
             f"Category: {category}. "
@@ -145,6 +167,9 @@ def get_similar_contexts(
     Gracefully handles embedding quota errors.
     """
     try:
+        client = _get_client()
+        if not client:
+            return []
         # Build context string (same as in store_phrase)
         context_str = (
             f"Category: {category}. "
@@ -199,6 +224,9 @@ def get_similar_contexts(
 def get_top_phrases_in_category(child_id: str, category: str, limit: int = 5) -> List[str]:
     """Get the most frequently used phrases in a specific category for a child"""
     try:
+        client = _get_client()
+        if not client:
+            return []
         # Query all points for this child and category
         search_filter = Filter(
             must=[
